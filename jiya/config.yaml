@@ -1,4 +1,5 @@
 pre_dock_position:
-    - check_point1: [3.33, 1.83, -1.57]
-    - check_point2: [3.21, 1.28, -1.57]
-    - check_point3: [3.10, -2.55, -1.57]
+    - petrol_pump: [3.17, 13.7, -0.55]
+    - burger_king: [20.51, -2.20, 0.80]
+    - apartment_area: [-0.6, -15.3, -0.57]
+    - parking: [-15.90, -1.0 , -2.0 ]
