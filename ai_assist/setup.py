@@ -23,6 +23,7 @@ setup(
             'function_call = ai_assist.function_call:main',
             'detect_aruco = ai_assist.detect_aruco :main',
             'dock = ai_assist.dock:main',
+            'speech = ai_assist.speech:main'
         ],
     },
 )

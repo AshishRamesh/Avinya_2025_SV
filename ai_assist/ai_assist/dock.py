@@ -32,7 +32,7 @@ class FollowAruco(Node):
             self.get_logger().info(f'Target: {self.target_x}, Distance: {self.target_z:.2f} cm')
 
             if self.target_z > self.stop_distance:
-                msg.linear.x = 0.1  # Move forward
+                msg.linear.x = 0.3  # Move forward
             else:
                 self.get_logger().info('Reached target distance. Stopping.')
                 msg.linear.x = 0.0  # Stop movement
