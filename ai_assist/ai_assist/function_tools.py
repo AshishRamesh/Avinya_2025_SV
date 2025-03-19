@@ -8,17 +8,15 @@ first_tools = [
     {
         "type": "function",
         "function": {
-            "name": "mov_nav",
-            "description": "Move the robot with optional predefined location.",
+            "name": "mov_cmd",
+            "description": "Move the robot a specified distance and/or rotate to a given angle in radians.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "linear_x": {"type": "number", "description": "Movement in X-axis."},
-                    "linear_y": {"type": "number", "description": "Movement in Y-axis."},
-                    "linear_z": {"type": "number", "description": "Rotation in radians."},
-                    "checkpoint": {"type": "string", "description": "Optional predefined location."}
+                    "linear_x": {"type": "number", "description": "Distance to move."},
+                    "angular_z": {"type": "number", "description": "Angle to turn in radians."},
                 },
-                "required": ["linear_x", "linear_y", "linear_z"],
+                "required": ["linear_x", "angular_z"],
             },
         },
     },
@@ -33,6 +31,20 @@ first_tools = [
 ]
 
 second_tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "nav_goal",
+            "description": "Move the robot to a  location given by the user, the location should not be none .",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": " location name."},
+                },
+                "required": ["location"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {

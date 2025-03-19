@@ -59,7 +59,7 @@ class ArucoDetector(Node):
                 # ✅ Pass unmodified 'corners' to drawDetectedMarkers
                 aruco.drawDetectedMarkers(frame, [corners])
                 cv.circle(frame, (center_x, center_y), 5, (0, 255, 0), -1)
-                cv.putText(frame, f"Dist: {distance:.2f} cm", (center_x, center_y - 10),
+                cv.putText(frame, f"Dist: {distance:.2f} m", (center_x, center_y - 10),
                         cv.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
 

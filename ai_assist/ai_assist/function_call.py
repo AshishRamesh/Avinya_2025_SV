@@ -1,14 +1,24 @@
-import rclpy, time, os, cv2, base64, pygame, whisper, sys, queue, threading, wave, json, numpy as np, sounddevice as sd
+import rclpy, time, os, cv2, yaml,base64, pygame, whisper,time, math,  sys, queue, threading, wave, json, numpy as np, sounddevice as sd
 from rclpy.node import Node
-from geometry_msgs.msg import Twist , Point
+from rclpy.action import ActionClient
+from geometry_msgs.msg import PoseStamped, Twist , Point
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge ,  CvBridgeError
+from nav_msgs.msg import Odometry
 from dotenv import load_dotenv
 from openai import OpenAI
+from nav2_msgs.action import NavigateToPose
 from PIL import Image as PILImage
 from gtts import gTTS
 from io import BytesIO
 from rclpy.executors import MultiThreadedExecutor
+
+if not hasattr(np, 'float'):
+    np.float = float  # patch deprecated alias
+
+
+from tf_transformations import quaternion_from_euler, euler_from_quaternion 
+from std_srvs.srv import Trigger 
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from function_tools import first_tools, second_tools
@@ -68,6 +78,30 @@ class Prompt(Node):
         self.target_z = 1000.0  # Start with a large distance
         self.last_received_time = time.time() - 10000
 
+        self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose') 
+
+
+        file_path = "/home/ashish/ros2/avinya_ws/src/ai_assist/ai_assist/config.yaml"
+
+        with open(file_path, 'r') as file:
+            config_data = yaml.safe_load(file)
+
+        self.pre_dock_position = {}
+        for item in config_data['pre_dock_position']:
+            for key, value in item.items():
+                self.pre_dock_position[key] = {'x': value[0], 'y': value[1], 'yaw': value[2]}
+        
+
+        self.pose_subscription = self.create_subscription(
+            Odometry,  
+            'odom',  
+            self.pose_callback,
+            10)
+
+        self.current_pose = None  
+        self.get_logger().info('Waiting for action server...')
+        self.nav_client.wait_for_server()
+
 
     def image_callback(self, data):
         """Receives and converts camera images."""
@@ -126,7 +160,11 @@ class Prompt(Node):
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are controlling a robot. Convert the given command into a structured JSON list of actions. Each action must have: 'action' (mov_cmd or capture), 'linear_x', and 'angular_z'. Return ONLY JSON, no extra text."
+                        "content": "You are controlling a robot. Convert the given command into a structured JSON list of actions. "
+                           "Each action must have 'action' (mov_cmd, nav_goal, docking, capture, or stop). "
+                           "If these 4 location (petrol pump,burger king,apartment area and parking) is mentioned, use 'nav_goal'. If just movement is mentioned, use 'mov_cmd'. "
+                           f"Available predefined locations: {self.pre_dock_position}"
+                           "Return ONLY JSON, with no extra text."
                     },
                     {"role": "user", "content": prompt}
                 ],
@@ -287,6 +325,11 @@ class Prompt(Node):
                 results.append(f"Moved {action.get('linear_x', 0)} meters , rotated {action.get('angular_z', 0)} radians.")
             elif action_type == "capture":
                 results.append(self.capture())
+            elif action_type == "nav_goal":
+                location = action.get("location")
+                print("Moving to:", location)
+                self.move_to_goal(location)
+                results.append(f"Moved to {location}.")
             elif action_type == "docking":
                 self.timer.cancel()
                 self.timer = self.create_timer(0.1, self.timer_callback_aruco)
@@ -371,6 +414,105 @@ class Prompt(Node):
         self.target_x = msg.x
         self.target_z = msg.z
         self.last_received_time = time.time()
+
+    def pose_callback(self, msg):
+        """Callback to handle the robot's current pose."""
+        self.current_pose = msg.pose.pose  
+
+    def get_current_pose(self):
+        """Returns the robot's current pose as (x, y, yaw in radians)"""
+        if self.current_pose:
+            x = self.current_pose.position.x
+            y = self.current_pose.position.y
+            orientation_q = self.current_pose.orientation
+            _, _, yaw = euler_from_quaternion(
+                [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w])
+            return x, y, yaw
+        return None
+
+    def send_goal(self, x, y, yaw):
+        """Sends a navigation goal to the action server."""
+        goal_msg = NavigateToPose.Goal()
+        goal_msg.pose = PoseStamped()
+        goal_msg.pose.header.frame_id = 'map'
+        goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
+
+        goal_msg.pose.pose.position.x = x
+        goal_msg.pose.pose.position.y = y
+
+        q = self.quaternion_from_yaw(yaw)
+        goal_msg.pose.pose.orientation.x = q[0]
+        goal_msg.pose.pose.orientation.y = q[1]
+        goal_msg.pose.pose.orientation.z = q[2]
+        goal_msg.pose.pose.orientation.w = q[3]
+
+        yaw_degrees = math.degrees(yaw)
+        self.get_logger().info(f'Sending goal to x: {x}, y: {y}, yaw: {yaw_degrees} degrees')
+        return self.nav_client.send_goal_async(goal_msg)
+
+    def quaternion_from_yaw(self, yaw):
+        """Helper function to create a quaternion from yaw."""
+        return quaternion_from_euler(0, 0, yaw)
+
+    def check_goal_status(self, goal_handle_future):
+        goal_handle = goal_handle_future.result()
+
+        if goal_handle is None:
+            self.get_logger().error("Goal handle future returned None. Possible communication failure.")
+            return False
+
+        if not goal_handle.accepted:
+            self.get_logger().info('Goal was rejected :(')
+            return False
+
+        self.get_logger().info('Goal accepted, waiting for result...')
+        result_future = goal_handle.get_result_async()
+
+        start_time = time.time()
+        timeout_sec = 30.0  # Adjust as needed
+
+        while not result_future.done():
+            rclpy.spin_once(self, timeout_sec=0.1)
+            if time.time() - start_time > timeout_sec:
+                self.get_logger().warn('Timed out waiting for result.')
+                return False
+
+        result = result_future.result()
+
+        if result.status == 4:
+            self.get_logger().info('Goal succeeded!')
+            current_pose = self.get_current_pose()
+            if current_pose:
+                x, y, yaw = current_pose
+                yaw_degrees = math.degrees(yaw)
+                self.get_logger().info(f'Robot reached position: x: {x}, y: {y}, yaw: {yaw_degrees} degrees')
+            else:
+                self.get_logger().info('Unable to retrieve current pose')
+            return True
+        else:
+            self.get_logger().info(f'Goal failed with status code: {result.status}')
+            return False
+
+
+
+    def move_to_goal(self, name):
+        if name not in self.pre_dock_position:
+            self.get_logger().error(f"Location '{name}' not found in predefined positions.")
+            return
+        """Move to a specific waypoint and perform actions at the waypoint."""
+        coordinates = self.pre_dock_position[name]
+        x, y, yaw = coordinates['x'], coordinates['y'], coordinates['yaw']
+        self.get_logger().info(f"Navigating to {name} (x: {x}, y: {y}, yaw: {yaw})")
+
+        future = self.send_goal(x, y, yaw)
+        print("goal sent")
+        # rclpy.spin_until_future_complete(self, future)
+
+        if not self.check_goal_status(future):
+            self.get_logger().info(f'Navigation failed at {name}, stopping.')
+            return 
+        else:
+            self.get_logger().info(f'Reached {name} successfully.')
 
 def clean_exit():
     print("\nExiting cleanly...")
