@@ -1,0 +1,4 @@
+pre_dock_position:
+    - check_point1: [3.33, 1.83, -1.57]
+    - check_point2: [3.21, 1.28, -1.57]
+    - check_point3: [3.10, -2.55, -1.57]
