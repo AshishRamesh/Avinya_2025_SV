@@ -1,6 +1,6 @@
 import rclpy, time, os, cv2, base64, pygame, whisper, sys, queue, threading, wave, json, numpy as np, sounddevice as sd
 from rclpy.node import Node
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Twist , Point
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge ,  CvBridgeError
 from dotenv import load_dotenv
@@ -8,8 +8,14 @@ from openai import OpenAI
 from PIL import Image as PILImage
 from gtts import gTTS
 from io import BytesIO
+from rclpy.executors import MultiThreadedExecutor
+
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from function_tools import first_tools, second_tools
+from dock import FollowAruco
 
 load_dotenv()
+
 
 class Prompt(Node):
     def __init__(self):
@@ -26,6 +32,9 @@ class Prompt(Node):
         )
         self.bridge = CvBridge()
         self.cv_image = None
+
+        self.sub_aruco = self.create_subscription(
+            Point, '/detected_marker', self.listener_callback, 10)
 
         self.client = OpenAI(
             base_url="https://models.inference.ai.azure.com",
@@ -50,41 +59,15 @@ class Prompt(Node):
         self.BG_COLOR = (14, 17, 23)
         self.TEXT_COLOR = (250, 250, 250)
         self.font = pygame.font.Font(None, 30)
+        self.follow_node = FollowAruco()
 
-        self.first_tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "mov_cmd",
-                    "description": "Move the robot a specified distance and/or rotate to a given angle in radians.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "linear_x": {
-                                "type": "number",
-                                "description": "Distance to move. Positive for forward, negative for backward."
-                            },
-                            "angular_z": {
-                                "type": "number",
-                                "description": "Angle to turn in radians. Positive for left, negative for right."
-                            }
-                        },
-                        "required": ["linear_x", "angular_z"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "capture",
-                    "description": "Capture an image using the camera.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                    },
-                },
-            },
-        ]
+        self.declare_parameter("stop_distance", 5.0)  # Stop at 20 cm
+        self.stop_distance = self.get_parameter('stop_distance').value
+
+        self.target_x = 0.0
+        self.target_z = 1000.0  # Start with a large distance
+        self.last_received_time = time.time() - 10000
+
 
     def image_callback(self, data):
         """Receives and converts camera images."""
@@ -148,7 +131,7 @@ class Prompt(Node):
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0,
-                tools=self.first_tools,
+                tools=first_tools + second_tools,
             )
             content = response.choices[0].message.content.strip()
             if content.startswith("```json"):
@@ -304,6 +287,10 @@ class Prompt(Node):
                 results.append(f"Moved {action.get('linear_x', 0)} meters , rotated {action.get('angular_z', 0)} radians.")
             elif action_type == "capture":
                 results.append(self.capture())
+            elif action_type == "docking":
+                self.timer.cancel()
+                self.timer = self.create_timer(0.1, self.timer_callback_aruco)
+                # results.append()
         return results
 
     def stop_and_transcribe(self):
@@ -358,6 +345,33 @@ class Prompt(Node):
 
             pygame.time.delay(100)
 
+    def timer_callback_aruco(self):
+        msg = Twist()
+
+        # If marker detected recently
+        if (time.time() - self.last_received_time < 1.0):
+            self.get_logger().info(f'Target: {self.target_x}, Distance: {self.target_z:.2f} cm')
+
+            if self.target_z > self.stop_distance:
+                msg.linear.x = 0.3  # Move forward
+            else:
+                self.get_logger().info('Reached target distance. Stopping.')
+                msg.linear.x = 0.0  # Stop movement
+                self.timer.cancel()
+                self.timer = self.create_timer(1.0, self.process_voice_command)
+
+            msg.angular.z = -0.7 * self.target_x  # Rotate to align with marker
+        else:
+            self.get_logger().info('Target lost. Searching...')
+            msg.angular.z = 0.5  # Rotate in place
+
+        self.publisher_.publish(msg)
+
+    def listener_callback(self, msg):
+        self.target_x = msg.x
+        self.target_z = msg.z
+        self.last_received_time = time.time()
+
 def clean_exit():
     print("\nExiting cleanly...")
     pygame.quit()
@@ -378,7 +392,7 @@ def main(args=None):
     finally:
         prompt_engine.destroy_node()
         rclpy.shutdown()
-        clean_exit()
+        # clean_exit()
 
 
 if __name__ == "__main__":
